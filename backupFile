@@ -1,0 +1,86 @@
+#!/bin/bash
+
+trap "echo -e '\t' Finished" EXIT TERM USR1 USR2 HUP
+. bashLib
+ourName=`basename "$0"`
+EXIT_WRONG_NUM_ARGS=1
+
+# The main backup script runs a find that checks for any files that have changed since the last backup.
+# "Change" is defined as "has a modification time that's more recent than the last time a backup ran."
+# However, files which meet that criterion might not be new by another criterion:
+# 	"Change" defined as "files on the main drive whose modification time is more recent than the modification time of the corresponding file on the backup drive."
+# This further script filters the files that find defines as "changed" (first def.) by checking whether they ALSO meet the second def.
+
+function copyFile()
+{
+	if (( "$#" == 2 ))
+	then
+		echo -e ${ourName}: ${bold_intense_green} Copying "$1" to "$2" ${colOff}
+		cp "$1" "$2"
+	else
+		return 1
+	fi
+}
+
+if [[ "$#" -eq 2 ]] # We need 2 arguments
+then
+	backupDrivePath="${1:-/f}" # Path to drive to backup. Defaults to F:/
+	fileToCopy="$2" # Name of file to check with regexes and copy if it passes all of the tests
+	
+	# Filter out any files that we should ignore
+	if ! ( 
+		[[ "$fileToCopy" =~ ^.*'$'RECYCLE.BIN.*$ ]] || # Recycle bin
+		[[ "$fileToCopy" =~ ^.*Config.Msi.*$ ]] || # Msi files
+		[[ "$fileToCopy" =~ ^.*Recovery.*$ ]] || # Recovery files
+		[[ "$fileToCopy" =~ ^.*'System Volume Information'.*$ ]] || # Vol. info. files
+		[[ "$fileToCopy" =~ ^.*winbuilds.*$ ]] ||
+		[[ "$fileToCopy" =~ ^.*DumpStack.*$ ]] ||
+		[[ "$fileToCopy" =~ ^.*erl_crash.dump.*$ ]] || # Erlang crash dump files
+		[[ "$fileToCopy" =~ ^.*NTUSER.DAT.*$ ]] || # NTUSER files
+		[[ "$fileToCopy" =~ ^.*pagefile.sys.*$ ]] || # Page files
+		[[ "$fileToCopy" =~ ^.*\.swp$ ]] || # Swap files
+		[[ "$fileToCopy" =~ ^.*node_modules.*$ ]] # node_modules
+	) # This is NOT a file that we should skip
+	then
+		# Copy the file to the backup drive. Bash ensures that the file's path on the laptop's hard drive is already in Linux form, and I intentionally named the
+		# folders on my backup drive using the same naming convention that Bash uses for my hard drives.
+		# So I can just append the file's path to the backup drive's path to create the file's new path
+		newPath="`echo \"$backupDrivePath\"/\"$fileToCopy\" | sed -e 's_//_/_g'`" # Put the paths together, then replace all multiple backslashes with a single
+		# backslash
+
+		# Don't copy entire directories recursively. Create the corresponding directory on the backup drive if it doesn't exist. Do nothing otherwise
+		if [[ -d "$fileToCopy" ]] # The path to copy is a directory
+		then
+			echo -e ${ourName}: checking backup path $bold_intense_blue "$newPath" $colOff
+
+			if ! [[ -d "$newPath" ]] # The corresponding directory doesn't exist on the backup drive
+			then
+				echo -e ${ourName}: ${bold_intense_red} Creating backup directory "$newPath" that corresponds to main drive dir "$fileToCopy" ${colOff}
+				mkdir -p "$newPath"
+			fi
+
+		else
+			if [[ -f "$newPath" ]] # There's already a copy of the file on the backup drive
+			then
+				echo -e ${ourName}: $bold_intense_blue $newPath $colOff already exists on the backup drive
+
+				if [[ "$fileToCopy" -nt "$newPath" ]] # Only copy the file from our hard drive if it's newer than the file on the backup drive
+				then
+						echo -e ${ourName}: ${bold_intense_red} Removing copy "$newPath" because the original file "$fileToCopy" is newer ${colOff}
+						rm -f "$newPath" # Remove the copy, since find has already determined that the file on the main drive is more recent than this one
+						copyFile "$fileToCopy" "$newPath"
+				fi
+
+			else # The file doesn't already exist on the backup drive
+				echo -e ${ourName}: $bold_intense_blue $newPath $colOff doesn\'t already exist on the backup drive
+				copyFile "$fileToCopy" "$newPath"
+			fi
+		fi
+	fi
+
+	exit 0
+
+else
+	echo Usage: ${ourName} /path/to/backup/drive /file/to/copy
+	exit $EXIT_WRONG_NUM_ARGS
+fi

@@ -1,0 +1,39 @@
+#!/bin/bash
+
+ourName=`basename $0`
+
+# Exit codes
+EXIT_NO_BACKUP_DRIVE=1
+EXIT_OK=0
+
+# How many background jobs we'll run @ once. We need to balance making the processing as parallel as possible with not starting so many processes that we overwhelm the system
+maxNSimFinds=11 # 44 directories to backup. This is their GCM.
+
+if [[ "$#" -eq 1 ]]
+then
+	backupDrivePath="${1:-/f}" # User tells us where the backup drive is. Defaults to "F:/"
+	lastBackupTimeFile="$backupDrivePath"/lastBackupTimestampFile # The backup drive should have a file whose timestamp will be the time when the last backup happened
+
+	# Copy only files that have changed, and only in the directories that we care about
+	while read d
+	do
+		nRunningFinds=`jobs -r | grep find | wc -l` # How many background find jobs are running?
+
+		if (( "$nRunningFinds" < "$maxNSimFinds" )) # Fewer jobs are running than the maximum # of jobs that we're allowed to start at once
+		then # We can start a new find in the background
+			find "$d" -newer "$lastBackupTimeFile" -exec backupFile "$backupDrivePath" {} \; & # Start a new search for changed files in the current directory in the
+			# background
+			
+		else
+			wait %1 # Wait until the oldest find job has finished. Then, let the loop continue. This way, we don't have to wait for $maxNSimFinds jobs all to finish
+			# once $maxNSimFinds jobs have started. We may start a new find as soon as the oldest one finishes.
+		fi
+	done < ~/Documents/dirsToBackup.txt
+
+	rm -fv "$lastBackupTimeFile" # Remove the old timestamp file
+	touch "$lastBackupTimeFile" # Create a new timestamp file with the current time
+	exit $EXIT_OK
+else
+	echo Usage: ${ourName} /path/to/backup/drive
+	exit $EXIT_NO_BACKUP_DRIVE
+fi
