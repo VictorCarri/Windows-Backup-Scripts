@@ -1,0 +1,397 @@
+#!/bin/bash -xv
+# A script which will automate the backup
+
+. bashLib
+
+# Exit codes
+FAILED_CHANGE_BACKUP_PATH=1
+FAILED_CREATE_BACKUP_DIR=2
+FAILED_CHANGE_BACKUP_DIR=3
+FAILED_CREATE_HOME_BACKUP_DIR=4
+FAILED_CHANGE_BACKUP_DIR_FOR_HOME_DIR=5
+FAILED_TAR_DIR_IN_HOME_DIR=6
+FAILED_REMOVE_OLD_TAR_FILE=7
+FAILED_CP_TO_MISC=8
+FAILED_CREATE_MISC_HOME_BACKUP=9
+FAILED_TAR_MISC_HOME_BACKUP=10
+FAILED_RM_MISC=11
+FAILED_GO_BACK_TOP=12
+FAILED_TAR_C=13
+FAILED_RM_C_DIR=14
+FAILED_MKDIR_D_BACKUP=15
+FAILED_CD_D_BACKUP_DIR=16
+FAILED_RM_OLD_TAR_D=17
+FAILED_TAR_D_FOLDER=18
+UNKNOWN_FILE_TYPE=19
+FAILED_CP_TO_D_BACKUP=20
+FAILED_RETURN_BACKUP_DIR_AFTER_D=21
+FAILED_TAR_D_BACKUP=22
+FAILED_RM_D_FOLDER=23
+FAILED_RETURN_MAIN_BACKUP_PATH=24
+FAILED_TAR_BACKUP_DIR=25
+FAILED_RM_BACKUP_DIR=26
+FAILED_ENC_BACKUP=27
+FAILED_RM_BACKUP_TGZ=28
+SUCCESS=0
+
+# Script vars
+ourName="`basename \"$0\"`"
+backupPath=/e
+
+function removeOldestFile()
+{
+	cd $backupPath
+	oldestFile="`find . -maxdepth 1 -type f -a \( -iname '*.txt' -o -iname '*.gpg' \) -printf "%T+ %p\n" | cut -d" " -f2 | head -n 1`"
+	echo Removing the oldest file \"$oldestFile\"
+	rm $oldestFile
+}
+
+function tryBackup()
+{
+	# Make a directory for the current month and year
+	curBackupDir=`date +%m-%Y`
+	
+	if [[ -d $curBackupDir ]] # Dir already exists
+	then
+		rm -rf $curBackupDir # Remove the old backup
+	fi
+
+	mkdir -v $curBackupDir 1>mkdir-${curBackupDir}.out.txt 2>mkdir-${curBackupDir}.err.txt
+	mkEx=$?
+	
+	if (( $mkEx != 0 )) # Failed to make backup dir
+	then
+		echo ${ourName}: Failed to create backup dir ${backupPath}/${curBackupDir}
+		echo -e '\t' mkdir exited with code $mkEx
+		exit $FAILED_CREATE_BACKUP_DIR
+	fi
+	
+	# Change to the backup directory
+	cd $curBackupDir
+	
+	if [[ $(pwd) != ${backupPath}/${curBackupDir} ]] # Failed to change dirs.
+	then
+		echo ${ourName}: Failed to change to backup dir ${backupPath}/${curBackupDir}
+		exit $FAILED_CHANGE_BACKUP_DIR
+	fi
+
+	
+	## Backup my home directory
+	homeDirBackupPath=c/Users/Victor
+	
+	if ! [[ -d $homeDirBackupPath ]] # Home dir DNE
+	then
+		sanitizedHomeDirBackupPath=$(echo $homeDirBackupPath | sed -e 's_/_-_g')
+		mkdir -p -v ./${homeDirBackupPath} 1>mkdir-${sanitizedHomeDirBackupPath}.out.txt 2>mkdir-${sanitizedHomeDirBackupPath}.err.txt
+		mkEx=$?
+		
+		if (( $mkEx != 0 )) # Failed to create backup dir. for my home directory
+		then
+			echo ${ourName}: Failed to create backup. dir. for home dir. \( ${backupPath}/${curBackupDir}/${homeDirBackupPath} \)
+			exit $FAILED_CREATE_HOME_BACKUP_DIR
+		fi
+	fi
+	
+	# Change to backup dir. for home dir.
+	cd ./${homeDirBackupPath}
+	
+	if [[ $(pwd) != ${backupPath}/${curBackupDir}/${homeDirBackupPath} ]] # Couldn't change dirs.
+	then
+		echo ${ourName}: Failed to change to backup. dir. for home dir. \( ${backupPath}/${curBackupDir}/${homeDirBackupPath} \)
+		exit $FAILED_CHANGE_BACKUP_DIR_FOR_HOME_DIR
+	fi
+	
+	# Dirs to skip while backing up the home directory
+	unsortedHomeSkipDirs=(anaconda3 AppData "Application Data" Cookies IntelGraphicsProfiles Links "Local Settings" MicrosoftEdgeBackups "My Documents" NetHood OneDrive PrintHood Recent Searches SendTo "Start Menu" Templates . .. .gnupg Contacts)
+	sortList homeSkipDirs "${unsortedHomeSkipDirs[@]}"
+
+	# Files to skip while backing up the home directory
+	homeSkipFiles=(NTUSER.DAT)
+	
+	for f in ~/.* ~/* # Backup all files in my home folder
+	do
+		if [[ -d "$f" ]] # This file is a directory
+		then
+			dirBasename="`basename \"$f\"`" # Get its name
+	
+			if ! contains "${homeSkipDirs[@]}" "$dirBasename" # Not in the list of dirs. to skip backing up
+			then
+				tarFileName="$dirBasename".tgz
+				tar -c -v -f "$dirBasename".tgz -z "$f" 1>"$dirBasename".out.txt 2>"$dirBasename".err.txt
+				tarEx="$?"
+	
+				if (( $tarEx != 0 )) # Tar failed
+				then
+					echo ${ourName}: Failed to tar "$f" to file "$dirBasename".tgz: tar exited with code "$tarEx"
+					exit $FAILED_TAR_DIR_IN_HOME_DIR
+				fi
+
+			else
+				echo Skipping directory \""$f"\" because it\'s in the list of dirs. to skip
+			fi
+		
+		else # This is a regular file
+			fileBaseName="`basename \"$f\"`"
+	
+			if ! contains "${homeSkipFiles[@]}"  "$fileBaseName" && ! [[ "`echo \"$fileBaseName\" | tr A-Z a-z`" =~ ^.*ntuser.*$ ]] # Not in the list of files to skip backing up and not an "NTUSER" or "ntuser" file
+			then
+				if ! [[ -d ./misc ]] # We haven't created the directory for misc. files yet
+				then
+					mkdir ./misc 1>mkdir-misc.out.txt 2>mkdir-misc.err.txt # Create it
+					mkEx="$?"
+		
+					if (( $mkEx != 0 )) # mkdir failed
+					then
+						echo ${ourName}: failed to create directory ${backupPath}/${curBackupDir}/${homeDirBackupPath}/misc
+						echo -e '\t' mkdir failed with error $mkEx
+						exit $FAILED_CREATE_MISC_HOME_BACKUP
+					fi
+				fi
+	
+				# After this, misc. is guaranteed to exist. If the above if was true, misc. was created. If it was false, misc already existed.
+				cp "$f" ./misc -v 1>./misc/"${fileBaseName}".out.txt 2>./misc/"${fileBaseName}".err.txt # Copy it to the directory
+				cpEx="$?"
+		
+				if (( $cpEx != 0 ))
+				then
+					echo ${ourName}: Failed to copy file "$f" to directory ${backupPath}/${curBackupDir}/${homeDirBackupPath}/misc
+					echo -e '\t' cp failed with error "$cpEx"
+					exit $FAILED_CP_TO_MISC
+				fi
+
+			else
+				echo Skipping file \""$f"\" because it\'s in the list of files to skip or it\'s an NTUSER file
+			fi
+		fi
+	done
+	
+	tar -c -v -f misc.tgz -z ./misc 1>misc.out.txt 2>misc.err.txt # Tar the files in the misc directory
+	tarEx=$?
+	
+	if (( $tarEx != 0 )) # Tar failed
+	then
+		echo ${ourName}: failed to tar \"misc\" directory in home dir. backup
+		echo -e '\t' tar failed with error $tarEx
+		exit $FAILED_TAR_MISC_HOME_BACKUP;
+	fi
+	
+	rm -r -f -v ./misc 1>rm-misc.out.txt 2>rm-misc.err.txt # We only need misc's tar, not the directory itself
+	rmEx=$?
+	
+	if (( $rmEx != 0 )) # rm failed
+	then
+		echo ${ourName}: failed to remove \"misc\" directory in home dir. backup
+		echo -e '\t' rm failed with error $rmEx
+		exit $FAILED_RM_MISC
+	fi
+	
+	cd ../../.. # Go back to top dir. of this month's backup
+	
+	if [[ $(pwd) != ${backupPath}/${curBackupDir} ]] # We didn't go to the right directory
+	then
+		echo ${ourName}: failed to go back to top dir. of this month\'s backup
+		exit $FAILED_GO_BACK_TOP
+	fi
+	
+	tar -c -v -f c.tgz -z ./c 1>c.tgz.out.txt 2>c.tgz.err.txt # Tar the c dir's backup
+	tarEx=$?
+	
+	if (( $tarEx != 0 )) # tar failed
+	then
+		echo ${ourName}: failed to tar c drive\'s backup
+		echo -e '\t' tar failed with error $tarEx
+		exit $FAILED_TAR_C
+	fi
+	
+	rm -r -f -v c 1>rm-c.out.txt 2>rm-c.err.txt # Remove the c directory, now that we've tarred it
+	rmEx=$?
+	
+	if (( $rmEx != 0 )) # rm failed
+	then
+		echo ${ourName}: failed to remove c drive backup dir.
+		echo -e '\t' rm failed with error $rmEx
+		exit $FAILED_RM_C_DIR
+	fi
+	
+	## Tar the d drive
+	dDirBackupPath=d
+	
+	if ! [[ -d $dDirBackupPath ]]
+	then
+		mkdir $dDirBackupPath 1>mkdir-${dDirBackupPath}.out.txt 2>mkdir-${dDirBackupPath}.err.txt # Create a folder to store all the tar files for the d drive
+		mkEx=$?
+		
+		if (( $mkEx != 0 )) # Mkdir failed
+		then
+			echo ${ourName}: failed to create backup dir. for d drive
+			echo -e '\t' mkdir failed with error $mkEx
+			exit $FAILED_MKDIR_D_BACKUP
+		fi
+	fi
+	
+	cd $dDirBackupPath # Go to the folder where we'll store the backups of the folders on D:
+	
+	if [[ $(pwd) != ${backupPath}/${curBackupDir}/${dDirBackupPath} ]] # Not in the right dir.
+	then
+		echo ${ourName}: failed to change dirs. to backup dir. for D drive \( ${backupPath}/${curBackupDir}/${dDirBackupPath} \)
+		exit $FAILED_CD_D_BACKUP_DIR
+	fi
+	
+	# Directories to skip backing up on D:
+	unsortedDSkipDirs=('$RECYCLE.BIN' "System Volume Information" Recovery Config.Msi winbuilds)
+	sortList dSkipDirs "${unsortedDSkipDirs[@]}"
+	dSkipFiles=(pagefile.sys)
+	
+	for f in /d/*
+	do
+		if [[ -d "$f" ]] # Directory, tar it
+		then
+			dirBasename="`basename \"$f\"`"
+	
+			if ! contains "${dSkipDirs[@]}" "$dirBasename" # Not in the list of dirs. to skip backing up
+			then
+				tarFileName="${dirBasename}".tgz
+				tar -c -v -f "$tarFileName" -z "$f" 1>"$tarFileName".out.txt 2>"$tarFileName".err.txt
+				tarEx=$?
+	
+				if (( $tarEx != 0 ))
+				then
+					echo ${ourName}: failed to tar "$f"
+					echo -e '\t' tar failed with error $tarEx
+					exit $FAILED_TAR_D_FOLDER
+				fi
+			fi
+		
+		elif [[ -f "$f" ]] # Regular file, copy it
+		then
+			fileBasename="`basename \"$f\"`"
+	
+			if ! [[ "$fileBasename" =~ NTUSER.DAT* ]] && ! [[ "$f" =~ DumpStack* ]] && ! contains "${dSkipFiles[@]}" "$fileBasename" && ! [[ -f "$fileBasename" ]] # Not one of the NTUSER files, not a DumpStack file, not in the list of files to skip, and not already copied to this directory
+			then
+				cp -v "$f" . 1>"$fileBasename".out.txt 2>"$fileBasename".err.txt # Copy the file into the directory to be tarred
+				cpEx=$?
+		
+				if (( $cpEx != 0 )) # cp failed
+				then
+					echo ${ourName}: failed to copy "$f" into the backup of D:
+					echo -e '\t' cp failed with error $cpEx
+					exit $FAILED_CP_TO_D_BACKUP
+				fi
+	
+			else
+				echo Skipping file "$f" because it\'s an NTUSER file, a DumpStack file, in the list of files to skip, or has already been copied.
+			fi
+	
+		else # Unknown type of file
+			echo Encountered unknown type of file: "$f"
+			exit $UNKNOWN_FILE_TYPE # Should never happen
+		fi
+	done
+	
+	# Go back to backup dir.
+	cd ..
+	
+	if [[ $(pwd) != ${backupPath}/${curBackupDir} ]] # Not in this month's backup dir.
+	then
+		echo ${ourName}: failed to exit to this month\'s backup dir. after backing up D:
+		exit $FAILED_RETURN_BACKUP_DIR_AFTER_D
+	fi
+	
+	# Tar D:'s backup
+	tar -c -v -f d.tgz -z ./d 1>d.tgz.out.txt 2>d.tgz.err.txt
+	tarEx=$?
+	
+	if (( $tarEx != 0 ))
+	then
+		echo ${ourName}: failed to tar D:\'s backup
+		echo -e '\t' tar failed with code $tarEx
+		exit $FAILED_TAR_D_BACKUP
+	fi
+	
+	# Remove the d folder, now that we've tarred it
+	rm -r -f -v ./d 1>rm-d.out.txt 2>rm-d.err.txt
+	rmEx=$?
+	
+	if (( $rmEx != 0 )) # rm failed
+	then
+		echo ${ourName}: failed to remove the folder containing D:\'s tar files
+		echo -e '\t' rm failed with code $rmEx
+		exit $FAILED_RM_D_FOLDER
+	fi
+	
+	cd  .. # Go back to main backup path
+	
+	if [[ $(pwd) != ${backupPath} ]] # Not at the main backup path
+	then
+		echo ${ourName}: failed to exit to main backup path before tarring this month\'s backup
+		exit $FAILED_RETURN_MAIN_BACKUP_PATH
+	fi
+	
+	# Tar this month's backup folder
+	backupTarFile=${curBackupDir}.tgz
+	tar -c -v -f $backupTarFile -z ./$curBackupDir 1>${backupTarFile}.out.txt 2>${backupTarFile}.err.txt
+	tarEx=$?
+	
+	if (( $tarEx != 0 )) # tar failed
+	then
+		echo ${ourName}: failed to tar this month\'s backup dir.
+		exit $FAILED_TAR_BACKUP_DIR
+	fi
+	
+	# Remove the backup directory
+	rm -r -f -v $curBackupDir 1>rm-${curBackupDir}.out.txt 2>rm-${curBackupDir}.err.txt
+	rmEx=$?
+	
+	if (( $rmEx != 0 ))
+	then
+		echo ${ourName}: failed to remove backup directory
+		exit $FAILED_RM_BACKUP_DIR
+	fi
+	
+	# Encrypt the tar file
+	encBackName=${backupTarFile}.gpg
+	gpg -e -rV -o ${encBackName} ${backupTarFile} 1>${encBackName}.out.txt 2>${encBackName}.err.txt
+	gpgEx=$?
+	
+	if (( $gpgEx != 0 )) # gpg failed
+	then
+		echo ${ourName}: failed to encrypt this month\'s backup
+		exit $FAILED_ENC_BACKUP
+	fi
+	
+	# Remove the old tar file
+	rm -f -v ${backupTarFile} 1>rm-${backupTarFile}.out.txt 2>rm-${backupTarFile}.err.txt
+	rmEx=$?
+	
+	if (( $rmEx != 0 ))
+	then
+		echo ${ourName}: failed to remove the backup tar file
+		exit $FAILED_RM_BACKUP_TGZ
+	fi
+	
+	# Finished!
+	echo Finished backing up\!
+	exit $SUCCESS
+}
+
+if [[ -n "$1" ]] # There is a path argument
+then
+	backupPath="$1"
+	echo ${ourName}: Set backup path to "$backupPath"
+fi
+
+cd $backupPath
+
+if [[ $(pwd) != $backupPath ]]
+then
+	echo ${ourName}: Couldn\'t change to backup path
+	exit $FAILED_CHANGE_BACKUP_PATH
+fi
+
+# Log all of our output
+exec 3>&1 4>&2 # Save old stdout & stderr
+trap 'exec 2>&4 1>&3' 0 1 2 3 6 9 14 15
+exec 1>out-`date +%m-%Y`.txt 2>err-`date +%m-%Y`.txt
+
+# TODO: Make the script keep trying to backup. Have it try to backup. If it fails, delete the backup dir & the oldest file. Then, try again. Repeat until the backup succeeds.
+tryBackup
